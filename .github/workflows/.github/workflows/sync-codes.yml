@@ -1,0 +1,40 @@
+name: Scan WWM redemption codes
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: wwm-code-monitor
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: discord-production
+
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Run tests
+        run: node --test
+
+      - name: Scan and notify Discord
+        run: node src/sync.js
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GH_STATE_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
