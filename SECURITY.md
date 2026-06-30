@@ -21,8 +21,9 @@ create a new one, and replace the GitHub Environment secret.
 - Enable two-factor authentication on the GitHub account.
 - Do not add collaborators unless they need access.
 - Keep the `discord-production` environment limited to the default branch.
-- Do not add `pull_request_target`, `workflow_run`, or manual dispatch triggers
-  to the secret-bearing workflow.
+- Do not add `pull_request_target` or `workflow_run` triggers to the
+  secret-bearing workflow. The manual dispatch input is only for redemption
+  codes; never paste secrets into workflow inputs.
 
 ## Reporting
 

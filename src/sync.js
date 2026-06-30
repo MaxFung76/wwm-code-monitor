@@ -1,13 +1,19 @@
-import { fetchBahamutEntries, reconcileState, SOURCE_URL } from "./monitor.js";
+import {
+  fetchBahamutEntries,
+  normalizeCode,
+  reconcileState,
+  SOURCE_URL,
+} from "./monitor.js";
 
 const STATE_TITLE = "[WWM Monitor] State - do not edit";
 const STATE_START = "<!-- wwm-code-state:start -->";
 const STATE_END = "<!-- wwm-code-state:end -->";
 const MAX_STATE_BYTES = 60_000;
+const MAX_EMBED_DESCRIPTION = 3900;
 
 function requireEnvironment(name) {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`缺少必要的 GitHub Secret：${name}`);
+  if (!value) throw new Error(`缺少 GitHub Secret 或環境變數：${name}`);
   return value;
 }
 
@@ -37,6 +43,20 @@ function validateWebhookUrl(value) {
   return url.toString();
 }
 
+function parseManualEntries(value) {
+  const tokens = value?.match(/[A-Za-z0-9][A-Za-z0-9_-]{5,31}/g) ?? [];
+  const entries = new Map();
+
+  for (const token of tokens) {
+    entries.set(normalizeCode(token), {
+      code: token.trim(),
+      status: "active",
+    });
+  }
+
+  return [...entries.values()];
+}
+
 async function githubRequest(repository, token, path, options = {}) {
   const response = await fetch(
     `https://api.github.com/repos/${repository}${path}`,
@@ -55,7 +75,7 @@ async function githubRequest(repository, token, path, options = {}) {
   );
 
   if (!response.ok) {
-    throw new Error(`GitHub 狀態儲存失敗：HTTP ${response.status}`);
+    throw new Error(`GitHub API 回傳 HTTP ${response.status}`);
   }
   if (response.status === 204) return null;
   return response.json();
@@ -65,7 +85,7 @@ function encodeState(state) {
   const json = JSON.stringify(state, null, 2);
   const body = `${STATE_START}\n\`\`\`json\n${json}\n\`\`\`\n${STATE_END}`;
   if (Buffer.byteLength(body, "utf8") > MAX_STATE_BYTES) {
-    throw new Error("去重狀態超過 GitHub Issue 容量限制");
+    throw new Error("狀態資料超過 GitHub Issue 大小限制");
   }
   return body;
 }
@@ -115,14 +135,86 @@ async function postDiscord(webhookUrl, payload) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      username: "燕雲十六聲兌換碼",
+      username: "燕雲十六聲兌換碼監控",
       allowed_mentions: { parse: [] },
       ...payload,
     }),
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
-    throw new Error(`Discord Webhook 發送失敗：HTTP ${response.status}`);
+    throw new Error(`Discord Webhook 回傳 HTTP ${response.status}`);
+  }
+}
+
+function reconcileManualState(previousState, manualEntries, now) {
+  const known = new Map(
+    (previousState?.codes ?? []).map((entry) => [
+      normalizeCode(entry.code),
+      entry,
+    ]),
+  );
+  const newActive = [];
+
+  for (const entry of manualEntries) {
+    const normalized = normalizeCode(entry.code);
+    const previous = known.get(normalized);
+    if (!previous) newActive.push(entry);
+
+    known.set(normalized, {
+      code: entry.code,
+      status: "active",
+      firstSeenAt: previous?.firstSeenAt ?? now,
+      lastSeenAt: now,
+    });
+  }
+
+  return {
+    newActive,
+    state: {
+      initialized: true,
+      sourceUrl: SOURCE_URL,
+      updatedAt: now,
+      codes: [...known.values()].sort((a, b) =>
+        a.code.localeCompare(b.code, "en", { sensitivity: "base" }),
+      ),
+    },
+  };
+}
+
+function chunkCodeLines(entries) {
+  const chunks = [];
+  let current = [];
+  let currentLength = 0;
+
+  for (const entry of entries) {
+    const line = `\`${entry.code}\``;
+    const nextLength = currentLength + line.length + 1;
+    if (current.length > 0 && nextLength > MAX_EMBED_DESCRIPTION) {
+      chunks.push(current);
+      current = [];
+      currentLength = 0;
+    }
+    current.push(line);
+    currentLength += line.length + 1;
+  }
+
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+async function postCodeEmbeds(webhookUrl, title, entries) {
+  for (const lines of chunkCodeLines(entries)) {
+    await postDiscord(webhookUrl, {
+      embeds: [
+        {
+          title,
+          description: lines.join("\n"),
+          color: 0x2f9e44,
+          url: SOURCE_URL,
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    });
   }
 }
 
@@ -132,13 +224,35 @@ async function main() {
   const webhookUrl = validateWebhookUrl(
     requireEnvironment("DISCORD_WEBHOOK_URL"),
   );
+  const now = new Date().toISOString();
+  const manualEntries = parseManualEntries(process.env.MANUAL_CODES);
+
+  if (manualEntries.length > 0) {
+    const stored = await loadStateIssue(repository, githubToken);
+    const result = reconcileManualState(
+      stored.state ?? { initialized: false, codes: [] },
+      manualEntries,
+      now,
+    );
+
+    await saveState(repository, githubToken, stored.issue, result.state);
+
+    if (result.newActive.length > 0) {
+      await postCodeEmbeds(webhookUrl, "手動新增兌換碼", result.newActive);
+    }
+
+    console.log(
+      `手動同步完成：輸入 ${manualEntries.length} 組，新增 ${result.newActive.length} 組。`,
+    );
+    return;
+  }
 
   const entries = await fetchBahamutEntries();
   const stored = await loadStateIssue(repository, githubToken);
   const result = reconcileState(
     stored.state ?? { initialized: false, codes: [] },
     entries,
-    new Date().toISOString(),
+    now,
   );
 
   await saveState(repository, githubToken, stored.issue, result.state);
@@ -148,7 +262,7 @@ async function main() {
       embeds: [
         {
           title: "兌換碼監控已啟用",
-          description: `已建立 ${entries.length} 組代碼的去重基準，之後只公告新有效碼。`,
+          description: `已建立 ${entries.length} 組兌換碼基準資料。之後只會通知新出現的有效碼。`,
           color: 0x228be6,
           url: SOURCE_URL,
           timestamp: new Date().toISOString(),
@@ -156,25 +270,13 @@ async function main() {
       ],
     });
   } else if (result.newActive.length > 0) {
-    await postDiscord(webhookUrl, {
-      embeds: [
-        {
-          title: "發現新兌換碼",
-          description: result.newActive
-            .map((entry) => `\`${entry.code}\``)
-            .join("\n"),
-          color: 0x2f9e44,
-          url: SOURCE_URL,
-          timestamp: new Date().toISOString(),
-        },
-      ],
-    });
+    await postCodeEmbeds(webhookUrl, "發現新兌換碼", result.newActive);
   }
 
   const active = entries.filter((entry) => entry.status === "active").length;
   const expired = entries.filter((entry) => entry.status === "expired").length;
   console.log(
-    `掃描完成：有效 ${active}、過期 ${expired}、新增 ${result.newActive.length}`,
+    `同步完成：有效 ${active} 組，過期 ${expired} 組，新增 ${result.newActive.length} 組。`,
   );
 }
 
