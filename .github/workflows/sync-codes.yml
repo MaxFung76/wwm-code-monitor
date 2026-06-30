@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
+    inputs:
+      manual_codes:
+        description: "Optional: paste codes here to publish them manually"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -39,3 +44,4 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GH_STATE_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
+          MANUAL_CODES: ${{ github.event.inputs.manual_codes }}
