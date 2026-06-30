@@ -1,0 +1,14 @@
+{
+  "name": "wwm-report-discord-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Discord slash-command report endpoint for WWM redemption codes.",
+  "scripts": {
+    "check": "node --check src/worker.js && node --check scripts/register-command.js",
+    "register:guild": "node scripts/register-command.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

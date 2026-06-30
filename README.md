@@ -149,3 +149,29 @@ Webhook URL 應該只存在 GitHub Environment Secret。
 ## 授權
 
 MIT License
+
+## Discord `/report` 回報功能
+
+如果想讓玩家直接在 Discord 用 `/report` 回報疑似兌換碼，可以使用本專案內的：
+
+```text
+discord-report-worker/
+```
+
+它是一個 Cloudflare Worker，負責接收 Discord Slash Command，然後把玩家貼上的兌換碼送到本專案的 GitHub Actions `manual_codes` 流程。
+
+流程是：
+
+```text
+玩家 /report
+Cloudflare Worker
+GitHub Actions manual_codes
+比對 GitHub Issue
+新碼才發 Discord 公告
+```
+
+詳細部署方式請看：
+
+```text
+discord-report-worker/README.md
+```
