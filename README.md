@@ -2,8 +2,6 @@
 
 這是一個使用 GitHub Actions 執行的《燕雲十六聲》兌換碼監控器。它會定時檢查指定的巴哈姆特文章，發現新兌換碼後透過 Discord Webhook 發送到指定頻道。
 
-這不是全天在線的 Discord Bot，不需要 Discord Bot Token，也不需要自己開電腦掛程式。
-
 ## 功能
 
 - 每 1 小時自動掃描一次兌換碼來源。
@@ -30,8 +28,6 @@
 ### 1. Fork 專案
 
 如果你想部署到自己的 Discord 頻道，請先 Fork 這個專案到自己的 GitHub 帳號。
-
-不要要求原作者把你的 Webhook 加到原作者的 repository，否則會消耗原作者的 GitHub Actions 額度。
 
 Fork 後，Actions 執行額度會算在你自己的 GitHub 帳號或組織底下。
 
