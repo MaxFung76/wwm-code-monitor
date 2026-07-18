@@ -1,173 +1,124 @@
 # 燕雲十六聲兌換碼監控器
 
-這是一個使用 GitHub Actions 執行的《燕雲十六聲》兌換碼監控器。它會定時檢查指定的巴哈姆特文章，發現新兌換碼後透過 Discord Webhook 發送到指定頻道。
+這是一個使用 GitHub Actions、GitHub Issue、Discord Webhook 與 Cloudflare Worker 的兌換碼監控工具。
+
+目前版本不再自動抓巴哈姆特，改用下列兩個來源：
+
+- https://www.arlenfuture.com/games/where-winds-meet-codes/
+- https://www.pcgamer.com/games/action/where-winds-meet-codes/
 
 ## 功能
 
-- 每 1 小時自動掃描一次兌換碼來源。
-- 可在 GitHub Actions 手動執行。
-- 支援手動貼上兌換碼發布到 Discord。
-- 發送前會先比對 GitHub Issue 裡的紀錄，已經發過的碼不會重複通知。
-- 自動把新碼寫回 GitHub Issue，作為下次比對用的紀錄。
-- 透過 Discord Webhook 發送通知，不使用 Discord Bot Token。
-- 不需要資料庫、不需要伺服器、不需要本機長時間開機。
+- 每 6 小時自動掃描 Arlen 與 PC Gamer 的兌換碼頁面。
+- 自動比對 GitHub Issue 裡已記錄的兌換碼。
+- 只有新出現的有效碼會發布到 Discord。
+- 已存在的兌換碼不會重複公告。
+- 來源網站標示為過期或失效的兌換碼，會從 Issue 狀態中刪除。
+- 支援 Discord `/report`，玩家可以直接回報疑似新兌換碼。
+- `/report` 回報的兌換碼一樣會先比對，沒記錄過才會公告。
 
 ## 運作方式
 
-本專案會使用一個 GitHub Issue 儲存已記錄的兌換碼，Issue 標題是：
+```text
+Arlen / PC Gamer
+GitHub Actions
+GitHub Issue 狀態資料
+Discord Webhook 公告
+```
+
+玩家回報流程：
+
+```text
+Discord /report
+Cloudflare Worker
+GitHub Actions manual_codes
+GitHub Issue 比對
+Discord Webhook 公告
+```
+
+## GitHub Issue 狀態
+
+程式會自動建立或更新一個 Issue：
 
 ```text
 [WWM Monitor] State - do not edit
 ```
 
-請不要刪除或隨意編輯這個 Issue。  
-如果你知道自己在做什麼，也可以手動調整裡面的 JSON 狀態，例如移除某個碼讓它重新被判定為新碼。
+這個 Issue 用來記錄目前已知的有效兌換碼。請不要手動亂改裡面的 JSON，除非你知道自己在改什麼。
 
-## 安裝方式
+## 必要設定
 
-### 1. Fork 專案
-
-如果你想部署到自己的 Discord 頻道，請先 Fork 這個專案到自己的 GitHub 帳號。
-
-Fork 後，Actions 執行額度會算在你自己的 GitHub 帳號或組織底下。
-
-### 2. 建立 Discord Webhook
-
-1. 到你想發布兌換碼的 Discord 頻道。
-2. 開啟頻道設定。
-3. 找到 `整合` 或 `Integrations`。
-4. 建立 Webhook。
-5. 複製 Webhook URL。
-
-請不要把 Webhook URL 貼到公開聊天、README、Issue、程式碼或截圖裡。Webhook URL 等同於可以往該頻道發訊息的密鑰。
-
-### 3. 設定 GitHub Environment Secret
-
-1. 到你的 GitHub repository。
-2. 進入 `Settings` -> `Environments`。
-3. 建立 environment：
+在 GitHub repository 的 `Settings` -> `Environments` 建立：
 
 ```text
 discord-production
 ```
 
-4. 在 `Environment secrets` 新增：
+並新增 Environment Secret：
 
 ```text
-Name: DISCORD_WEBHOOK_URL
-Value: 你的 Discord Webhook URL
+DISCORD_WEBHOOK_URL
 ```
 
-5. 建議把 deployment branch 限制為：
+Value 填 Discord 頻道的 Webhook URL。
+
+## 手動新增兌換碼
+
+到 GitHub：
 
 ```text
-main
+Actions -> Scan WWM redemption codes -> Run workflow
 ```
 
-### 4. 啟用 GitHub Actions
+在 `manual_codes` 欄位貼上兌換碼，一行一組或多組都可以。
 
-1. 進入 repository 的 `Actions` 分頁。
-2. 如果 GitHub 要求你啟用 Actions，按下啟用。
-3. 選擇 `Scan WWM redemption codes`。
-4. 按 `Run workflow` 測試。
+系統會自動比對：
 
-第一次執行時，程式會建立基準紀錄，不會把所有舊碼洗版發出去。之後才會通知新出現的兌換碼。
+- 新碼會寫入 Issue 並公告到 Discord。
+- 重複碼只會更新紀錄，不會重複公告。
 
-## 手動發布兌換碼
+## Discord `/report`
 
-如果你手上有新的兌換碼，想直接發布到 Discord：
+`discord-report-worker/` 是 Cloudflare Worker 版本的 Discord `/report` 功能。
 
-1. 到 GitHub repository 的 `Actions`。
-2. 選擇 `Scan WWM redemption codes`。
-3. 按 `Run workflow`。
-4. 在 `manual_codes` 欄位貼上兌換碼。
-5. 按下執行。
-
-可以一次貼多組，例如：
+玩家可以在 Discord 使用：
 
 ```text
-WWMREDDIT0625
-FHKD7HHWRJ
-HD8PHDX443
+/report
 ```
 
-手動發布時也會先比對 GitHub Issue：
+把疑似新兌換碼貼進 `codes` 欄位。Worker 會觸發 GitHub Actions 的 `manual_codes` 流程，再由 GitHub Actions 負責比對與公告。
 
-- 已存在的兌換碼不會重複發送。
-- 不存在的新兌換碼才會發到 Discord。
-- 發送後會自動寫入 Issue，避免下次重複發送。
-
-## 自動掃描
-
-目前排程是每小時一次：
-
-```yaml
-cron: "17 * * * *"
-```
-
-GitHub Actions 的排程時間使用 UTC，而且可能會有幾分鐘延遲，這是 GitHub 的正常行為。
-
-## 常見問題
-
-### 為什麼我手動貼進 Issue 後沒有發 Discord？
-
-Issue 是已記錄清單，不是發布入口。  
-把碼加進 Issue 代表「已經看過」，所以不會發送。
-
-要手動發布請用 Actions 的 `Run workflow`，並把兌換碼貼到 `manual_codes`。
-
-### 別人使用會消耗我的 GitHub Actions 額度嗎？
-
-如果他們 Fork 到自己的 GitHub 帳號並在自己的 repository 執行，就會消耗他們自己的額度。
-
-如果你把別人加進你的 repository，或幫很多 Discord 伺服器共用同一個 repository，就會消耗你的額度。
-
-### 可以公開 repository 嗎？
-
-可以，但請先確認 repository 內沒有：
-
-- `.env`
-- Discord Webhook URL
-- Discord Bot Token
-- 任何 API key 或密碼
-
-Webhook URL 應該只存在 GitHub Environment Secret。
-
-## 安全提醒
-
-- 不要把 `DISCORD_WEBHOOK_URL` 放進程式碼。
-- 不要把 `DISCORD_WEBHOOK_URL` 貼到 Issue 或 README。
-- 不要把 Webhook URL 截圖公開。
-- 如果 Webhook 外洩，請到 Discord 刪除舊 Webhook，建立新的，再更新 GitHub Secret。
-
-更多安全注意事項請看 [SECURITY.md](SECURITY.md)。
-
-## 授權
-
-MIT License
-
-## Discord `/report` 回報功能
-
-如果想讓玩家直接在 Discord 用 `/report` 回報疑似兌換碼，可以使用本專案內的：
-
-```text
-discord-report-worker/
-```
-
-它是一個 Cloudflare Worker，負責接收 Discord Slash Command，然後把玩家貼上的兌換碼送到本專案的 GitHub Actions `manual_codes` 流程。
-
-流程是：
-
-```text
-玩家 /report
-Cloudflare Worker
-GitHub Actions manual_codes
-比對 GitHub Issue
-新碼才發 Discord 公告
-```
-
-詳細部署方式請看：
+設定方式請看：
 
 ```text
 discord-report-worker/README.md
 ```
+
+## 排程
+
+目前 GitHub Actions 每 6 小時執行一次：
+
+```yaml
+cron: "17 0,6,12,18 * * *"
+```
+
+GitHub Actions 的排程使用 UTC 時間，所以實際觸發時間會和台灣時間相差 8 小時。
+
+## 安全提醒
+
+請不要把下列內容上傳到 GitHub：
+
+- Discord Webhook URL
+- Discord Bot Token
+- GitHub Token
+- `.env`
+- 任何 API Key 或私密金鑰
+
+這些資料應該放在 GitHub Secrets 或 Cloudflare Worker Secrets。
+
+如果 Token 或 Webhook URL 不小心公開，請立刻重設。
+
+## License
+
+MIT License
