@@ -1,8 +1,10 @@
 import {
-  fetchBahamutEntries,
+  ARLEN_URL,
+  fetchArlenEntries,
+  fetchPcGamerEntries,
   normalizeCode,
+  PC_GAMER_URL,
   reconcileState,
-  SOURCE_URL,
 } from "./monitor.js";
 
 const STATE_TITLE = "[WWM Monitor] State - do not edit";
@@ -10,16 +12,18 @@ const STATE_START = "<!-- wwm-code-state:start -->";
 const STATE_END = "<!-- wwm-code-state:end -->";
 const MAX_STATE_BYTES = 60_000;
 const MAX_EMBED_DESCRIPTION = 3900;
+const ANNOUNCEMENT_SOURCE_URL = ARLEN_URL;
+const STATE_SOURCE_URL = `${ARLEN_URL} | ${PC_GAMER_URL}`;
 
 function requireEnvironment(name) {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`缺少 GitHub Secret 或環境變數：${name}`);
+  if (!value) throw new Error(`Missing environment variable: ${name}`);
   return value;
 }
 
 function validateRepository(value) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)) {
-    throw new Error("GitHub repository 格式不正確");
+    throw new Error("GitHub repository format is invalid");
   }
   return value.split("/").map(encodeURIComponent).join("/");
 }
@@ -38,7 +42,7 @@ function validateWebhookUrl(value) {
     !/^\d+$/.test(parts[2]) ||
     !/^[A-Za-z0-9._-]{20,}$/.test(parts[3])
   ) {
-    throw new Error("DISCORD_WEBHOOK_URL 格式不正確");
+    throw new Error("DISCORD_WEBHOOK_URL format is invalid");
   }
   return url.toString();
 }
@@ -75,7 +79,7 @@ async function githubRequest(repository, token, path, options = {}) {
   );
 
   if (!response.ok) {
-    throw new Error(`GitHub API 回傳 HTTP ${response.status}`);
+    throw new Error(`GitHub API returned HTTP ${response.status}`);
   }
   if (response.status === 204) return null;
   return response.json();
@@ -85,7 +89,7 @@ function encodeState(state) {
   const json = JSON.stringify(state, null, 2);
   const body = `${STATE_START}\n\`\`\`json\n${json}\n\`\`\`\n${STATE_END}`;
   if (Buffer.byteLength(body, "utf8") > MAX_STATE_BYTES) {
-    throw new Error("狀態資料超過 GitHub Issue 大小限制");
+    throw new Error("State data is too large for the GitHub Issue");
   }
   return body;
 }
@@ -94,12 +98,12 @@ function decodeState(body) {
   const start = body.indexOf(STATE_START);
   const end = body.indexOf(STATE_END);
   if (start < 0 || end <= start) {
-    throw new Error("GitHub 狀態 Issue 格式不正確");
+    throw new Error("GitHub state issue format is invalid");
   }
 
   const section = body.slice(start + STATE_START.length, end);
   const match = section.match(/```json\s*([\s\S]*?)\s*```/);
-  if (!match) throw new Error("GitHub 狀態 JSON 不存在");
+  if (!match) throw new Error("GitHub state JSON block was not found");
   return JSON.parse(match[1]);
 }
 
@@ -135,14 +139,14 @@ async function postDiscord(webhookUrl, payload) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      username: "燕雲十六聲兌換碼監控",
+      username: "燕雲十六聲兌換碼",
       allowed_mentions: { parse: [] },
       ...payload,
     }),
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
-    throw new Error(`Discord Webhook 回傳 HTTP ${response.status}`);
+    throw new Error(`Discord Webhook returned HTTP ${response.status}`);
   }
 }
 
@@ -172,7 +176,7 @@ function reconcileManualState(previousState, manualEntries, now) {
     newActive,
     state: {
       initialized: true,
-      sourceUrl: SOURCE_URL,
+      sourceUrl: STATE_SOURCE_URL,
       updatedAt: now,
       codes: [...known.values()].sort((a, b) =>
         a.code.localeCompare(b.code, "en", { sensitivity: "base" }),
@@ -210,12 +214,70 @@ async function postCodeEmbeds(webhookUrl, title, entries) {
           title,
           description: lines.join("\n"),
           color: 0x2f9e44,
-          url: SOURCE_URL,
+          url: ANNOUNCEMENT_SOURCE_URL,
           timestamp: new Date().toISOString(),
         },
       ],
     });
   }
+}
+
+function isTemporarySourceBlock(error) {
+  return /HTTP (403|429)\b/.test(error?.message ?? "");
+}
+
+function isSourceScanEnabled() {
+  return process.env.SOURCE_SCAN_ENABLED !== "false";
+}
+
+function mergeSourceEntries(target, entries) {
+  for (const entry of entries) {
+    const normalized = normalizeCode(entry.code);
+    const previous = target.get(normalized);
+    if (previous?.status === "expired") continue;
+
+    if (!previous || entry.status === "expired") {
+      target.set(normalized, {
+        code: normalized,
+        status: entry.status,
+      });
+    }
+  }
+}
+
+async function fetchConfiguredSourceEntries() {
+  const sources = [
+    { name: "Arlen", fetchEntries: fetchArlenEntries },
+    { name: "PC Gamer", fetchEntries: fetchPcGamerEntries },
+  ];
+  const entries = new Map();
+  const failures = [];
+
+  for (const source of sources) {
+    try {
+      const sourceEntries = await source.fetchEntries();
+      mergeSourceEntries(entries, sourceEntries);
+
+      const active = sourceEntries.filter(
+        (entry) => entry.status === "active",
+      ).length;
+      const expired = sourceEntries.filter(
+        (entry) => entry.status === "expired",
+      ).length;
+      console.log(
+        `${source.name} source loaded: ${active} active, ${expired} expired.`,
+      );
+    } catch (error) {
+      failures.push(`${source.name}: ${error.message}`);
+      console.warn(`${source.name} source failed: ${error.message}`);
+    }
+  }
+
+  if (entries.size === 0) {
+    throw new Error(`All configured sources failed. ${failures.join(" | ")}`);
+  }
+
+  return [...entries.values()];
 }
 
 async function main() {
@@ -238,21 +300,39 @@ async function main() {
     await saveState(repository, githubToken, stored.issue, result.state);
 
     if (result.newActive.length > 0) {
-      await postCodeEmbeds(webhookUrl, "手動新增兌換碼", result.newActive);
+      await postCodeEmbeds(webhookUrl, "玩家回報新兌換碼", result.newActive);
     }
 
     console.log(
-      `手動同步完成：輸入 ${manualEntries.length} 組，新增 ${result.newActive.length} 組。`,
+      `Manual report checked ${manualEntries.length} code(s), added ${result.newActive.length}.`,
     );
     return;
   }
 
-  const entries = await fetchBahamutEntries();
+  if (!isSourceScanEnabled()) {
+    console.log(
+      "Source scanning is disabled. Manual /report submissions still work.",
+    );
+    return;
+  }
+
+  let entries;
+  try {
+    entries = await fetchConfiguredSourceEntries();
+  } catch (error) {
+    if (!isTemporarySourceBlock(error)) throw error;
+
+    console.warn(`Source temporarily blocked: ${error.message}`);
+    console.warn("This run was skipped. Manual /report still works.");
+    return;
+  }
+
   const stored = await loadStateIssue(repository, githubToken);
   const result = reconcileState(
     stored.state ?? { initialized: false, codes: [] },
     entries,
     now,
+    STATE_SOURCE_URL,
   );
 
   await saveState(repository, githubToken, stored.issue, result.state);
@@ -261,10 +341,10 @@ async function main() {
     await postDiscord(webhookUrl, {
       embeds: [
         {
-          title: "兌換碼監控已啟用",
+          title: "兌換碼監控已建立",
           description: `已建立 ${entries.length} 組兌換碼基準資料。之後只會通知新出現的有效碼。`,
           color: 0x228be6,
-          url: SOURCE_URL,
+          url: ANNOUNCEMENT_SOURCE_URL,
           timestamp: new Date().toISOString(),
         },
       ],
@@ -276,7 +356,7 @@ async function main() {
   const active = entries.filter((entry) => entry.status === "active").length;
   const expired = entries.filter((entry) => entry.status === "expired").length;
   console.log(
-    `同步完成：有效 ${active} 組，過期 ${expired} 組，新增 ${result.newActive.length} 組。`,
+    `Source sync complete: ${active} active, ${expired} expired, ${result.newActive.length} new.`,
   );
 }
 
